@@ -22,9 +22,10 @@ export const SocketProvider = ({ children }) => {
   const [isSharingScreen, setIsSharingScreen] = useState(false);
 
   // ── Group call state ───────────────────────────────────────
-  const [currentRoom, setCurrentRoom]   = useState(null);   // { roomId, roomName }
-  const [roomPeers, setRoomPeers]       = useState({});     // { socketId: { peer, stream, username } }
+  const [currentRoom, setCurrentRoom]       = useState(null);
+  const [roomPeers, setRoomPeers]           = useState({});
   const [localRoomStream, setLocalRoomStream] = useState(null);
+  const [incomingGroupCall, setIncomingGroupCall] = useState(null); // { roomId, roomName, callerName }
 
   // Refs
   const myVideo        = useRef(null);
@@ -108,6 +109,11 @@ export const SocketProvider = ({ children }) => {
     });
 
     s.on("room-error", (msg) => alert(`Room error: ${msg}`));
+
+    // ── Group call notification (incoming ring for all online users) ──
+    s.on("group-call-started", ({ roomId, roomName, callerName }) => {
+      setIncomingGroupCall({ roomId, roomName, callerName });
+    });
 
     return () => {
       s.disconnect();
@@ -326,7 +332,13 @@ export const SocketProvider = ({ children }) => {
       sendMessage,
       // group call
       currentRoom, roomPeers, localRoomStream,
-      joinRoom, leaveRoom,
+      incomingGroupCall,
+      dismissGroupCall: () => setIncomingGroupCall(null),
+      joinRoom: async (roomId) => {
+        setIncomingGroupCall(null);
+        return joinRoom(roomId);
+      },
+      leaveRoom,
       // auth helper
       setLoggedInUser,
     }}>

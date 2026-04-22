@@ -1439,3 +1439,153 @@ input {
   background: #e03058;
   transform: scale(1.1);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   GROUP CALL NOTIFICATION TOAST
+   ═══════════════════════════════════════════════════════════ */
+
+.group-call-notification {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  width: 340px;
+  background: var(--bg-card);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 40px rgba(108, 99, 255, 0.35);
+  padding: 18px 18px 0;
+  z-index: 1100;
+  overflow: hidden;
+  animation: toastSlideIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+@keyframes toastSlideIn {
+  from { opacity: 0; transform: translateY(60px) scale(0.9); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Pulsing accent ring */
+.gcn-ring {
+  position: absolute;
+  top: -20px;
+  right: -20px;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: var(--accent-glow);
+  animation: gcnPulse 1.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes gcnPulse {
+  0%, 100% { transform: scale(1); opacity: 0.5; }
+  50%       { transform: scale(1.4); opacity: 0.15; }
+}
+
+.gcn-icon-wrap {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--accent-glow);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.gcn-body {
+  flex: 1;
+}
+
+.gcn-title {
+  font-size: 0.92rem;
+  color: var(--text-1);
+  line-height: 1.4;
+}
+
+.gcn-title strong { color: var(--accent); }
+
+.gcn-room {
+  font-size: 0.8rem;
+  color: var(--text-2);
+  margin-top: 3px;
+}
+
+/* First row: icon + body */
+.group-call-notification > .gcn-icon-wrap,
+.group-call-notification > .gcn-body {
+  display: flex;
+  align-items: flex-start;
+}
+
+/* Re-layout as a 2-column row for icon+body */
+.group-call-notification {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  grid-template-rows: auto auto auto;
+  column-gap: 12px;
+  row-gap: 12px;
+  align-items: start;
+}
+
+.gcn-ring {
+  grid-column: 1 / -1;
+  position: absolute;
+}
+
+.gcn-icon-wrap { grid-column: 1; grid-row: 1; }
+.gcn-body      { grid-column: 2; grid-row: 1; }
+.gcn-actions   { grid-column: 1 / -1; grid-row: 2; display: flex; gap: 8px; }
+.gcn-progress-bar { grid-column: 1 / -1; grid-row: 3; margin: 0 -18px; }
+
+.gcn-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: var(--transition);
+  flex: 1;
+  justify-content: center;
+}
+
+.gcn-join {
+  background: var(--accent);
+  color: #fff;
+}
+
+.gcn-join:hover {
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
+
+.gcn-dismiss {
+  background: rgba(255,255,255,0.06);
+  color: var(--text-2);
+  flex: 0;
+  padding: 9px 12px;
+}
+
+.gcn-dismiss:hover {
+  background: rgba(255, 77, 109, 0.12);
+  color: var(--red);
+}
+
+/* Countdown progress bar */
+.gcn-progress-bar {
+  height: 3px;
+  background: rgba(255,255,255,0.06);
+}
+
+.gcn-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 1s linear;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}

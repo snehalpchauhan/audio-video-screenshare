@@ -6,6 +6,7 @@ import Sidebar from "./components/Sidebar";
 import Chat from "./components/Chat";
 import VideoCall from "./components/VideoCall";
 import GroupCall from "./components/GroupCall";
+import GroupCallNotification from "./components/GroupCallNotification";
 import { FiVideo, FiLogIn, FiUserPlus, FiKey, FiPlus, FiUsers, FiCopy, FiCheckCircle } from "react-icons/fi";
 import {
   authAPI, roomsAPI,
@@ -512,6 +513,8 @@ function AppShellWithLogout({ onLogout }) {
         </div>
       )}
       <VideoCall />
+      {/* Group call ring notification — shown to all online users */}
+      <GroupCallNotification />
     </div>
   );
 }

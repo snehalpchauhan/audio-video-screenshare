@@ -426,6 +426,18 @@ io.on("connection", (socket) => {
 
     socket.emit("room-joined", { roomId, roomName: rooms[roomId].name, participants: existingParticipants });
     socket.to(roomId).emit("user-joined-room", { socketId: socket.id, username });
+
+    // Notify ALL online users (not in the room) that a group call is active
+    if (existingParticipants.length === 0) {
+      // First person in room — broadcast "call started" to everyone else online
+      socket.broadcast.emit("group-call-started", {
+        roomId,
+        roomName: rooms[roomId].name,
+        callerName: username,
+        callerSocketId: socket.id,
+      });
+    }
+
     console.log(`👥 ${username} joined room: ${rooms[roomId].name}`);
   });
 
