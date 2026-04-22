@@ -1,97 +1,94 @@
 import React from "react";
 import { useSocket } from "../context/SocketContext";
-import { FiVideo, FiPhone, FiMessageSquare, FiGlobe, FiUser } from "react-icons/fi";
+import { FiGlobe, FiPhone, FiVideo, FiUsers, FiKey } from "react-icons/fi";
 
-const Sidebar = ({ selectedUser, setSelectedUser }) => {
-  const { users, me, name, callUser, activeCall } = useSocket();
+const Sidebar = ({ selectedUser, setSelectedUser, activeView, setActiveView }) => {
+  const { users, me, username, callUser } = useSocket();
 
-  // Exclude self from user list
   const otherUsers = users.filter((u) => u.socketId !== me);
 
   return (
-    <div className="sidebar">
+    <aside className="sidebar">
       {/* My profile */}
       <div className="my-profile">
-        <div className="avatar my-avatar">{name?.charAt(0).toUpperCase()}</div>
+        <div className="avatar">{username?.charAt(0)?.toUpperCase() || "?"}</div>
         <div className="profile-info">
-          <span className="my-name">{name}</span>
-          <span className="status-badge online">● Online</span>
+          <span className="my-name">{username}</span>
+          <span className="status-badge online">● online</span>
         </div>
       </div>
 
-      <div className="sidebar-section-label">CHANNELS</div>
+      {/* Navigation */}
+      <span className="sidebar-section-label">NAVIGATION</span>
 
-      {/* Global chat button */}
       <button
-        className={`sidebar-item ${!selectedUser ? "active" : ""}`}
-        onClick={() => setSelectedUser(null)}
+        className={`sidebar-item ${activeView === "chat" && !selectedUser ? "active" : ""}`}
+        onClick={() => { setActiveView("chat"); setSelectedUser(null); }}
       >
-        <FiGlobe size={16} />
-        <span>Global Chat</span>
+        <FiGlobe size={15} /> Global Chat
       </button>
 
-      <div className="sidebar-section-label">
-        ONLINE — {otherUsers.length}
-      </div>
+      <button
+        className={`sidebar-item ${activeView === "rooms" ? "active" : ""}`}
+        onClick={() => { setActiveView("rooms"); setSelectedUser(null); }}
+      >
+        <FiUsers size={15} /> Group Call Rooms
+      </button>
 
-      {/* Users list */}
+      <button
+        className={`sidebar-item ${activeView === "apikeys" ? "active" : ""}`}
+        onClick={() => { setActiveView("apikeys"); setSelectedUser(null); }}
+      >
+        <FiKey size={15} /> API Keys
+      </button>
+
+      {/* Online users */}
+      <span className="sidebar-section-label" style={{ marginTop: 12 }}>
+        ONLINE — {otherUsers.length}
+      </span>
+
       {otherUsers.length === 0 ? (
         <div className="no-users">
-          <FiUser size={20} />
-          <p>No one else online yet</p>
+          <FiUsers size={22} />
+          <span>No one else online</span>
         </div>
       ) : (
         otherUsers.map((user) => (
           <div
             key={user.socketId}
-            className={`user-item ${
-              selectedUser?.socketId === user.socketId ? "active" : ""
-            }`}
+            className={`user-item ${selectedUser?.socketId === user.socketId ? "active" : ""}`}
           >
-            {/* User info (click to open DM) */}
             <button
               className="user-info"
-              onClick={() => setSelectedUser(user)}
+              onClick={() => { setSelectedUser(user); setActiveView("chat"); }}
             >
-              <div className="avatar user-avatar">
-                {user.name.charAt(0).toUpperCase()}
-              </div>
+              <div className="avatar">{user.name?.charAt(0)?.toUpperCase()}</div>
               <div className="user-details">
                 <span className="user-name">{user.name}</span>
-                <span className="user-status">● Active</span>
+                <span className="user-status">online</span>
               </div>
             </button>
 
-            {/* Call buttons */}
             <div className="user-call-btns">
               <button
                 className="call-icon-btn"
                 title={`Video call ${user.name}`}
                 onClick={() => callUser(user.socketId, user.name, true)}
-                disabled={!!activeCall}
               >
-                <FiVideo size={15} />
+                <FiVideo size={14} />
               </button>
               <button
                 className="call-icon-btn"
                 title={`Audio call ${user.name}`}
                 onClick={() => callUser(user.socketId, user.name, false)}
-                disabled={!!activeCall}
               >
-                <FiPhone size={15} />
-              </button>
-              <button
-                className="call-icon-btn"
-                title={`Message ${user.name}`}
-                onClick={() => setSelectedUser(user)}
-              >
-                <FiMessageSquare size={15} />
+                <FiPhone size={14} />
               </button>
             </div>
           </div>
         ))
       )}
-    </div>
+    </aside>
   );
 };
 
