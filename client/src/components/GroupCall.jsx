@@ -197,7 +197,14 @@ const GroupCall = () => {
           <FiMonitor size={20} />
         </button>
 
-        <button className="ctrl-btn leave-call" onClick={leaveRoom} title="Leave room">
+        <button
+          className="ctrl-btn leave-call"
+          onClick={() => {
+            leaveRoom();
+            try { window.parent.postMessage({ type: "vl-left" }, "*"); } catch {}
+          }}
+          title="Leave room"
+        >
           <FiLogOut size={20} />
         </button>
       </div>
