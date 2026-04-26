@@ -1,0 +1,26 @@
+# Copy to `KEYS` in the repo root (gitignored) and edit. Used by:
+#   ./scripts/deploy.sh
+#   ./scripts/configure-deploy-path.sh  (SSH into VPS, find repo path, patch _DEPLOY_PATH_DEFAULT in deploy.sh)
+
+# --- SSH (required for remote deploy from your Mac) ---
+DEPLOY_SSH=root@YOUR_SERVER_IP
+# SSH_PORT=65002
+SSH_PASSWORD='your-root-or-vps-password'
+# Or: SSH_PASSWORD_FILE=${HOME}/.voicelink_ssh_password   # chmod 600; first line = password
+
+# --- Remote repo root on the VPS (folder that contains scripts/deploy.sh) ---
+# If unsure, run:  ./scripts/configure-deploy-path.sh
+DEPLOY_PATH=/var/www/audio-video-screenshare
+
+# --- Git on the server (push from your laptop first: git push origin main) ---
+GIT_PULL=1
+# GIT_REMOTE=origin
+# GIT_BRANCH=main
+
+# --- Optional ---
+PM2_APP=voicelink
+# COPY_CLIENT_BUILD_TO=/var/www/voicelink/html
+# SKIP_CLIENT_BUILD=1
+# SKIP_RESTART=1
+# SYSTEMD_UNIT=voicelink.service
+# RESTART_CMD="sudo systemctl restart voicelink"

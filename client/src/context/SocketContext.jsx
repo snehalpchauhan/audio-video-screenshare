@@ -4,17 +4,42 @@ import Peer from "simple-peer";
 import { getToken } from "../services/api";
 
 const SocketContext = createContext();
-const SERVER_URL = `https://${window.location.hostname}:5001`;
+const SERVER_URL = process.env.REACT_APP_SERVER_URL || `https://${window.location.hostname}:5001`;
+
+// ─── WebRTC ICE server config (STUN + TURN) ───────────────────
+// STUN: free, discovers your public IP (helps ~80% of users)
+// TURN: relays media when direct P2P fails (corporate NAT, symmetric NAT)
+const ICE_SERVERS = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    {
+      urls: [
+        "turn:voicelink.vnnovate.net:3478",
+        "turns:voicelink.vnnovate.net:5349",
+      ],
+      username: "voicelink_turn",
+      credential: "VoicelinkTurn2026",
+    },
+  ],
+};
 
 export const SocketProvider = ({ children }) => {
   const [socket, setSocket]         = useState(null);
   const [me, setMe]                 = useState("");
   const [users, setUsers]           = useState([]);
   const [messages, setMessages]     = useState([]);
-  const [username, setUsername]     = useState("");
+
+  // ── Initialize username from localStorage so the socket is created
+  //    only ONCE (not twice: first with "" then with the real name)
+  const [username, setUsername]     = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("vl_user") || "null")?.username || "";
+    } catch { return ""; }
+  });
 
   // ── 1-on-1 call state ─────────────────────────────────────
-  const [callState, setCallState]   = useState({ isReceivingCall: false, from: "", fromName: "", signal: null });
+  const [callState, setCallState]   = useState({ isReceivingCall: false, from: "", fromName: "", signal: null, videoCall: true });
   const [activeCall, setActiveCall] = useState(null);
   const [callAccepted, setCallAccepted] = useState(false);
   const [stream, setStream]         = useState(null);
@@ -22,9 +47,12 @@ export const SocketProvider = ({ children }) => {
   const [isSharingScreen, setIsSharingScreen] = useState(false);
 
   // ── Group call state ───────────────────────────────────────
-  const [currentRoom, setCurrentRoom]       = useState(null);
-  const [roomPeers, setRoomPeers]           = useState({});
-  const [localRoomStream, setLocalRoomStream] = useState(null);
+  const [currentRoom, setCurrentRoom]             = useState(null);
+  const [roomPeers, setRoomPeers]                 = useState({});
+  const [localRoomStream, setLocalRoomStream]     = useState(null);
+  const [localGroupDisplayStream, setLocalGroupDisplayStream] = useState(null); // camera OR screen
+  const [isGroupSharingScreen, setIsGroupSharingScreen] = useState(false);
+  const [groupScreenSharerId, setGroupScreenSharerId] = useState(null); // socketId of peer sharing screen
   const [incomingGroupCall, setIncomingGroupCall] = useState(null); // { roomId, roomName, callerName }
 
   // Refs
@@ -33,9 +61,11 @@ export const SocketProvider = ({ children }) => {
   const peerRef        = useRef(null);
   const socketRef      = useRef(null);
   const streamRef      = useRef(null);
-  const screenStreamRef= useRef(null);
-  const roomPeersRef   = useRef({});      // mirror of roomPeers (for callbacks)
-  const localRoomStreamRef = useRef(null);
+  const screenStreamRef      = useRef(null);
+  const groupScreenStreamRef = useRef(null); // screen capture stream for group calls
+  const compositeStreamRef   = useRef(null); // canvas composite (screen + camera PiP)
+  const roomPeersRef         = useRef({});   // mirror of roomPeers (for callbacks)
+  const localRoomStreamRef   = useRef(null);
 
   const updateStream = (s) => { streamRef.current = s; setStream(s); };
   const updateRoomPeers = (fn) => {
@@ -49,7 +79,9 @@ export const SocketProvider = ({ children }) => {
   // ── Connect to Socket.IO with JWT ──────────────────────────
   useEffect(() => {
     const token = getToken();
-    if (!token) return; // no token → wait until logged in
+    // Wait until BOTH token AND username are ready — prevents creating
+    // 2 sockets (one with username="" then one with the real name)
+    if (!token || !username) return;
 
     const s = io(SERVER_URL, {
       transports: ["websocket"],
@@ -67,8 +99,8 @@ export const SocketProvider = ({ children }) => {
     });
 
     // ── 1-on-1 signaling ──
-    s.on("incoming-call", ({ from, signal, fromName }) => {
-      setCallState({ isReceivingCall: true, from, fromName, signal });
+    s.on("incoming-call", ({ from, signal, fromName, videoCall }) => {
+      setCallState({ isReceivingCall: true, from, fromName, signal, videoCall: videoCall !== false });
     });
     s.on("call-accepted", (signal) => {
       setCallAccepted(true);
@@ -115,6 +147,11 @@ export const SocketProvider = ({ children }) => {
       setIncomingGroupCall({ roomId, roomName, callerName });
     });
 
+    // ── Group call: screen share status from a peer ──────────
+    s.on("room-screenshare-status", ({ socketId, sharing }) => {
+      setGroupScreenSharerId(sharing ? socketId : null);
+    });
+
     return () => {
       s.disconnect();
       cleanupRoomPeers();
@@ -129,6 +166,7 @@ export const SocketProvider = ({ children }) => {
       initiator,
       trickle: false,
       stream: lStream || undefined,
+      config: ICE_SERVERS,
     });
 
     peer.on("signal", (signal) => {
@@ -213,9 +251,10 @@ export const SocketProvider = ({ children }) => {
     if (!mediaStream) return;
     setActiveCall({ peerId, peerName });
 
-    const peer = new Peer({ initiator: true, trickle: false, stream: mediaStream });
+    const peer = new Peer({ initiator: true, trickle: false, stream: mediaStream, config: ICE_SERVERS });
     peer.on("signal", (signal) => {
-      socketRef.current.emit("call-user", { to: peerId, signal, fromName: username });
+      // Pass videoCall flag so the callee knows what type of call this is
+      socketRef.current.emit("call-user", { to: peerId, signal, fromName: username, videoCall });
     });
     peer.on("stream", (remote) => {
       setRemoteStream(remote);
@@ -233,7 +272,7 @@ export const SocketProvider = ({ children }) => {
     setCallAccepted(true);
     setActiveCall({ peerId: callState.from, peerName: callState.fromName });
 
-    const peer = new Peer({ initiator: false, trickle: false, stream: mediaStream });
+    const peer = new Peer({ initiator: false, trickle: false, stream: mediaStream, config: ICE_SERVERS });
     peer.on("signal", (signal) => {
       socketRef.current.emit("answer-call", { to: callState.from, signal });
     });
@@ -291,12 +330,116 @@ export const SocketProvider = ({ children }) => {
     }
   };
 
+  // ── Canvas Compositor: screen + camera PiP ────────────────
+  // Combines screen capture (full) + camera (small PiP corner) into one stream.
+  // Remote peers see both simultaneously in a single video tile.
+  const createCompositeStream = (screenStream, cameraStream) => {
+    const canvas = document.createElement("canvas");
+    const W = 1280, H = 720;
+    canvas.width = W; canvas.height = H;
+    const ctx2d = canvas.getContext("2d");
+
+    const makeVid = (stream) => {
+      const v = document.createElement("video");
+      v.srcObject = stream; v.muted = true; v.autoplay = true;
+      v.play().catch(() => {});
+      return v;
+    };
+    const screenVid = makeVid(screenStream);
+    const camVid    = cameraStream ? makeVid(cameraStream) : null;
+
+    let rafId;
+    const draw = () => {
+      // Full-screen capture
+      if (screenVid.readyState >= 2) ctx2d.drawImage(screenVid, 0, 0, W, H);
+      else { ctx2d.fillStyle = "#0a0a1a"; ctx2d.fillRect(0, 0, W, H); }
+
+      // Camera PiP — bottom-right corner
+      if (camVid && camVid.readyState >= 2) {
+        const pW = 220, pH = 124;
+        const pX = W - pW - 12, pY = H - pH - 12;
+        ctx2d.fillStyle = "rgba(0,0,0,0.55)";
+        ctx2d.fillRect(pX - 4, pY - 4, pW + 8, pH + 8);
+        ctx2d.drawImage(camVid, pX, pY, pW, pH);
+      }
+      rafId = requestAnimationFrame(draw);
+    };
+    draw();
+
+    const composite = canvas.captureStream(30);
+    composite._stop = () => cancelAnimationFrame(rafId);
+    return composite;
+  };
+
+  // ── Group Call: Screen Share ──────────────────────────────
+  const shareGroupScreen = async () => {
+    try {
+      const sStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: "always", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      groupScreenStreamRef.current = sStream;
+      setIsGroupSharingScreen(true);
+      setLocalGroupDisplayStream(sStream); // show raw screen locally
+
+      // Create canvas composite: screen capture + camera PiP
+      const composite = createCompositeStream(sStream, localRoomStreamRef.current);
+      compositeStreamRef.current = composite;
+      const compositeTrack = composite.getVideoTracks()[0];
+      const camTrack = localRoomStreamRef.current?.getVideoTracks()[0];
+
+      // Send composite (screen + camera PiP) to all room peers
+      Object.values(roomPeersRef.current).forEach(({ peer }) => {
+        if (peer && camTrack) {
+          peer.replaceTrack(camTrack, compositeTrack, localRoomStreamRef.current);
+        }
+      });
+
+      // Tell room we started sharing screen (so others adjust layout)
+      socketRef.current?.emit("room-screenshare-status", {
+        roomId: currentRoom?.roomId, sharing: true,
+      });
+
+      sStream.getVideoTracks()[0].addEventListener("ended", () => stopGroupScreenShare());
+    } catch (err) {
+      console.error("Group screen share error:", err);
+      setIsGroupSharingScreen(false);
+    }
+  };
+
+  const stopGroupScreenShare = () => {
+    // Stop canvas draw loop
+    compositeStreamRef.current?._stop?.();
+    const compositeTrack = compositeStreamRef.current?.getVideoTracks()[0];
+    compositeStreamRef.current = null;
+
+    // Stop screen capture
+    groupScreenStreamRef.current?.getTracks().forEach(t => t.stop());
+    groupScreenStreamRef.current = null;
+    setIsGroupSharingScreen(false);
+    setLocalGroupDisplayStream(localRoomStreamRef.current); // revert to camera
+
+    // Revert all peers back to camera track
+    const camTrack = localRoomStreamRef.current?.getVideoTracks()[0];
+    if (compositeTrack && camTrack) {
+      Object.values(roomPeersRef.current).forEach(({ peer }) => {
+        if (peer) peer.replaceTrack(compositeTrack, camTrack, localRoomStreamRef.current);
+      });
+    }
+
+    // Tell room we stopped sharing screen
+    socketRef.current?.emit("room-screenshare-status", {
+      roomId: currentRoom?.roomId, sharing: false,
+    });
+  };
+
   // ── Group Call: Join Room ────────────────────────────────
   const joinRoom = async (roomId) => {
     try {
       const lStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localRoomStreamRef.current = lStream;
       setLocalRoomStream(lStream);
+      setLocalGroupDisplayStream(lStream); // start showing camera
       socketRef.current.emit("join-room", roomId);
     } catch (err) {
       console.error("Could not get media for room:", err);
@@ -309,12 +452,22 @@ export const SocketProvider = ({ children }) => {
     if (currentRoom) {
       socketRef.current.emit("leave-room", currentRoom.roomId);
     }
+    // Stop screen share + composite if active
+    compositeStreamRef.current?._stop?.();
+    compositeStreamRef.current = null;
+    if (groupScreenStreamRef.current) {
+      groupScreenStreamRef.current.getTracks().forEach(t => t.stop());
+      groupScreenStreamRef.current = null;
+    }
+    setIsGroupSharingScreen(false);
+    setGroupScreenSharerId(null);
     cleanupRoomPeers();
     if (localRoomStreamRef.current) {
       localRoomStreamRef.current.getTracks().forEach(t => t.stop());
       localRoomStreamRef.current = null;
     }
     setLocalRoomStream(null);
+    setLocalGroupDisplayStream(null);
     setCurrentRoom(null);
   };
 
@@ -331,7 +484,9 @@ export const SocketProvider = ({ children }) => {
       shareScreen, stopScreenShare,
       sendMessage,
       // group call
-      currentRoom, roomPeers, localRoomStream,
+      currentRoom, roomPeers, localRoomStream, localGroupDisplayStream,
+      isGroupSharingScreen, groupScreenSharerId,
+      shareGroupScreen, stopGroupScreenShare,
       incomingGroupCall,
       dismissGroupCall: () => setIncomingGroupCall(null),
       joinRoom: async (roomId) => {

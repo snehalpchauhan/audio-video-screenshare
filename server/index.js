@@ -9,24 +9,38 @@ const cors       = require("cors");
 const jwt        = require("jsonwebtoken");
 const bcrypt     = require("bcryptjs");
 const { randomUUID: uuidv4 } = require("crypto");
+const db         = require("./db");
 
 const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 // ─── Secrets ────────────────────────────────────────────────
-const JWT_SECRET     = process.env.JWT_SECRET     || "voicelink-jwt-secret-change-in-prod";
-const SESSION_SECRET = process.env.SESSION_SECRET || "voicelink-session-secret-change-in-prod";
-const JWT_EXPIRES    = "24h";
-const SESSION_EXPIRES = "1h"; // short-lived session tokens for third-party use
+const JWT_SECRET      = process.env.JWT_SECRET      || "voicelink-jwt-secret-change-in-prod";
+const SESSION_SECRET  = process.env.SESSION_SECRET  || "voicelink-session-secret-change-in-prod";
+const JWT_EXPIRES     = "24h";
+const SESSION_EXPIRES = "1h";
 
-// ─── In-memory stores ────────────────────────────────────────
-const usersDB  = {};  // { username: { id, username, passwordHash } }
-const rooms    = {};  // { roomId: { id, name, createdBy, participants: Set<socketId>, ownerId } }
-const sockets  = {};  // { socketId: { userId, username } }
-const apiKeys  = {};  // { apiKey: { id, name, ownerId, createdAt } }
+// ─── In-memory session state (ephemeral — reset on restart) ──
+const sockets          = {};  // { socketId: { userId, username } }
+const roomParticipants = {};  // { roomId: Set<socketId> }
 
-// ─── SSL Certs ───────────────────────────────────────────────
+// ─── Helper: deduplicated user list (one entry per username) ──
+// When a user has multiple tabs open, they appear only ONCE.
+// The socket shown is the first registered one (stable across tab opens).
+const getUniqueUsers = (excludeSocketId = null) => {
+  const seen = new Set();
+  const list = [];
+  for (const [socketId, u] of Object.entries(sockets)) {
+    if (!seen.has(u.username)) {
+      seen.add(u.username);
+      list.push({ socketId, name: u.username });
+    }
+  }
+  return excludeSocketId ? list.filter(u => u.socketId !== excludeSocketId) : list;
+};
+
+// ─── SSL Certs (optional — reverse proxy handles TLS in prod) ─
 const certPath = path.join(__dirname, "certs", "cert.pem");
 const keyPath  = path.join(__dirname, "certs", "key.pem");
 
@@ -39,7 +53,7 @@ if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
   console.log("🔒 HTTPS mode enabled");
 } else {
   server = http.createServer(app);
-  console.log("⚠️  HTTP mode (no certs found)");
+  console.log("⚠️  HTTP mode (Apache/reverse proxy handles TLS)");
 }
 
 // ─── Auth Middleware (regular JWT) ───────────────────────────
@@ -56,271 +70,308 @@ const authMiddleware = (req, res, next) => {
 };
 
 // ─── API Key Middleware ───────────────────────────────────────
-const apiKeyMiddleware = (req, res, next) => {
+const apiKeyMiddleware = async (req, res, next) => {
   const key = req.headers["x-api-key"] || req.query.apiKey;
   if (!key) return res.status(401).json({ error: "Missing X-Api-Key header" });
-  const entry = apiKeys[key];
-  if (!entry) return res.status(401).json({ error: "Invalid API key" });
-  req.apiKeyEntry = entry;
-  next();
+  try {
+    const result = await db.query("SELECT * FROM api_keys WHERE api_key = $1", [key]);
+    if (!result.rows[0]) return res.status(401).json({ error: "Invalid API key" });
+    req.apiKeyEntry = result.rows[0];
+    next();
+  } catch (err) {
+    console.error("DB error in apiKeyMiddleware:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
 };
 
 // ═══════════════════════════════════════════════════════════
 //  HEALTH
 // ═══════════════════════════════════════════════════════════
 
-app.get("/health", (req, res) =>
-  res.json({ status: "ok", tls: useTLS, users: Object.keys(usersDB).length, rooms: Object.keys(rooms).length })
-);
+app.get("/health", async (req, res) => {
+  try {
+    const usersCount = await db.query("SELECT COUNT(*) FROM users");
+    const roomsCount = await db.query("SELECT COUNT(*) FROM rooms");
+    res.json({
+      status: "ok",
+      tls: useTLS,
+      users: parseInt(usersCount.rows[0].count),
+      rooms: parseInt(roomsCount.rows[0].count),
+    });
+  } catch {
+    res.json({ status: "ok", tls: useTLS, db: "error" });
+  }
+});
 
 // ═══════════════════════════════════════════════════════════
 //  AUTH — Register / Login / Verify
 // ═══════════════════════════════════════════════════════════
 
-/**
- * POST /api/auth/register
- * Body: { username, password }
- * Returns: { token, user }
- */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+
 app.post("/api/auth/register", async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, email, companyName } = req.body;
   if (!username || !password)
     return res.status(400).json({ error: "username and password required" });
-  if (usersDB[username])
-    return res.status(409).json({ error: "Username already taken" });
   if (password.length < 4)
     return res.status(400).json({ error: "Password must be at least 4 characters" });
+  const emailTrim = typeof email === "string" ? email.trim() : "";
+  const companyTrim = typeof companyName === "string" ? companyName.trim().slice(0, 255) : "";
+  if (emailTrim && !EMAIL_RE.test(emailTrim))
+    return res.status(400).json({ error: "Invalid email address" });
+  try {
+    const exists = await db.query("SELECT id FROM users WHERE username = $1", [username]);
+    if (exists.rows[0]) return res.status(409).json({ error: "Username already taken" });
+    if (emailTrim) {
+      const emailTaken = await db.query("SELECT id FROM users WHERE email = $1", [emailTrim]);
+      if (emailTaken.rows[0]) return res.status(409).json({ error: "Email already registered" });
+    }
 
-  const passwordHash = await bcrypt.hash(password, 10);
-  const id = uuidv4();
-  usersDB[username] = { id, username, passwordHash };
-
-  const token = jwt.sign({ id, username }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
-  res.status(201).json({ token, user: { id, username } });
+    const passwordHash = await bcrypt.hash(password, 10);
+    const id = uuidv4();
+    await db.query(
+      "INSERT INTO users (id, username, password_hash, email, company_name) VALUES ($1, $2, $3, $4, $5)",
+      [id, username, passwordHash, emailTrim || null, companyTrim || null]
+    );
+    const token = jwt.sign({ id, username }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+    res.status(201).json({
+      token,
+      user: { id, username, email: emailTrim || null, companyName: companyTrim || null },
+    });
+  } catch (err) {
+    console.error("Register error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-/**
- * POST /api/auth/login
- * Body: { username, password }
- * Returns: { token, user }
- */
 app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password)
     return res.status(400).json({ error: "username and password required" });
+  try {
+    const result = await db.query("SELECT * FROM users WHERE username = $1", [username]);
+    const user = result.rows[0];
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
-  const user = usersDB[username];
-  if (!user) return res.status(401).json({ error: "Invalid credentials" });
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) return res.status(401).json({ error: "Invalid credentials" });
 
-  const valid = await bcrypt.compare(password, user.passwordHash);
-  if (!valid) return res.status(401).json({ error: "Invalid credentials" });
-
-  const token = jwt.sign({ id: user.id, username }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
-  res.json({ token, user: { id: user.id, username } });
+    const token = jwt.sign({ id: user.id, username }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        username,
+        email: user.email || null,
+        companyName: user.company_name || null,
+      },
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-/**
- * GET /api/auth/verify
- * Header: Authorization: Bearer <token>
- * Returns: { valid: true, user }
- */
-app.get("/api/auth/verify", authMiddleware, (req, res) => {
-  res.json({ valid: true, user: req.user });
+app.get("/api/auth/verify", authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      "SELECT id, username, email, company_name FROM users WHERE id = $1",
+      [req.user.id]
+    );
+    const u = result.rows[0];
+    if (!u) return res.status(401).json({ error: "User not found" });
+    res.json({
+      valid: true,
+      user: {
+        id: u.id,
+        username: u.username,
+        email: u.email || null,
+        companyName: u.company_name || null,
+      },
+    });
+  } catch (err) {
+    console.error("Verify error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════
 //  ROOMS — Create / List / Get
 // ═══════════════════════════════════════════════════════════
 
-/**
- * GET /api/rooms
- * Header: Authorization: Bearer <token>
- * Returns: { rooms: [...] }
- */
-app.get("/api/rooms", authMiddleware, (req, res) => {
-  const list = Object.values(rooms).map((r) => ({
-    id: r.id, name: r.name, createdBy: r.createdBy,
-    participantCount: r.participants.size,
-  }));
-  res.json({ rooms: list });
+app.get("/api/rooms", authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query("SELECT * FROM rooms ORDER BY created_at DESC");
+    const list = result.rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      createdBy: r.created_by,
+      participantCount: roomParticipants[r.id]?.size || 0,
+    }));
+    res.json({ rooms: list });
+  } catch (err) {
+    console.error("List rooms error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-/**
- * POST /api/rooms
- * Header: Authorization: Bearer <token>
- * Body: { name }
- * Returns: { room }
- */
-app.post("/api/rooms", authMiddleware, (req, res) => {
+app.post("/api/rooms", authMiddleware, async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: "name required" });
-  const id = uuidv4();
-  rooms[id] = { id, name, createdBy: req.user.username, ownerId: req.user.id, participants: new Set() };
-  res.status(201).json({ room: { id, name, createdBy: req.user.username, participantCount: 0 } });
+  try {
+    const id = uuidv4();
+    await db.query(
+      "INSERT INTO rooms (id, name, created_by, owner_id) VALUES ($1, $2, $3, $4)",
+      [id, name, req.user.username, req.user.id]
+    );
+    res.status(201).json({ room: { id, name, createdBy: req.user.username, participantCount: 0 } });
+  } catch (err) {
+    console.error("Create room error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-/**
- * GET /api/rooms/:id
- * Header: Authorization: Bearer <token>
- * Returns: { room }
- */
-app.get("/api/rooms/:id", authMiddleware, (req, res) => {
-  const room = rooms[req.params.id];
-  if (!room) return res.status(404).json({ error: "Room not found" });
-  res.json({ room: { id: room.id, name: room.name, createdBy: room.createdBy, participantCount: room.participants.size } });
+app.get("/api/rooms/:id", authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query("SELECT * FROM rooms WHERE id = $1", [req.params.id]);
+    const room = result.rows[0];
+    if (!room) return res.status(404).json({ error: "Room not found" });
+    res.json({
+      room: {
+        id: room.id,
+        name: room.name,
+        createdBy: room.created_by,
+        participantCount: roomParticipants[room.id]?.size || 0,
+      },
+    });
+  } catch (err) {
+    console.error("Get room error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════
 //  API KEYS — Generate / List / Revoke
 // ═══════════════════════════════════════════════════════════
 
-/**
- * POST /api/keys
- * Header: Authorization: Bearer <token>
- * Body: { name }   (friendly label for the key)
- * Returns: { apiKey, id, name }
- *
- * Third-party developers use this key to generate session tokens.
- */
-app.post("/api/keys", authMiddleware, (req, res) => {
+app.post("/api/keys", authMiddleware, async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: "name required" });
-
-  const keyId  = uuidv4();
-  const apiKey = `vl_${uuidv4().replace(/-/g, "")}`;
-  apiKeys[apiKey] = { id: keyId, name, ownerId: req.user.id, ownerUsername: req.user.username, createdAt: new Date().toISOString() };
-  res.status(201).json({ apiKey, id: keyId, name, createdAt: apiKeys[apiKey].createdAt });
+  try {
+    const keyId  = uuidv4();
+    const apiKey = `vl_${uuidv4().replace(/-/g, "")}`;
+    await db.query(
+      "INSERT INTO api_keys (id, api_key, name, owner_id, owner_username) VALUES ($1, $2, $3, $4, $5)",
+      [keyId, apiKey, name, req.user.id, req.user.username]
+    );
+    const row = await db.query("SELECT created_at FROM api_keys WHERE id = $1", [keyId]);
+    res.status(201).json({ apiKey, id: keyId, name, createdAt: row.rows[0].created_at });
+  } catch (err) {
+    console.error("Create API key error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-/**
- * GET /api/keys
- * Header: Authorization: Bearer <token>
- * Returns: { keys: [...] } (without the actual key value)
- */
-app.get("/api/keys", authMiddleware, (req, res) => {
-  const myKeys = Object.entries(apiKeys)
-    .filter(([, v]) => v.ownerId === req.user.id)
-    .map(([key, v]) => ({
-      id: v.id, name: v.name, createdAt: v.createdAt,
-      keyPreview: `${key.slice(0, 8)}...`, // show only prefix
+app.get("/api/keys", authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      "SELECT id, api_key, name, created_at FROM api_keys WHERE owner_id = $1 ORDER BY created_at DESC",
+      [req.user.id]
+    );
+    const myKeys = result.rows.map((k) => ({
+      id: k.id,
+      name: k.name,
+      createdAt: k.created_at,
+      keyPreview: `${k.api_key.slice(0, 8)}...`,
     }));
-  res.json({ keys: myKeys });
+    res.json({ keys: myKeys });
+  } catch (err) {
+    console.error("List keys error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-/**
- * DELETE /api/keys/:id
- * Header: Authorization: Bearer <token>
- * Returns: { success: true }
- */
-app.delete("/api/keys/:id", authMiddleware, (req, res) => {
-  const entry = Object.entries(apiKeys).find(([, v]) => v.id === req.params.id && v.ownerId === req.user.id);
-  if (!entry) return res.status(404).json({ error: "Key not found" });
-  delete apiKeys[entry[0]];
-  res.json({ success: true });
+app.delete("/api/keys/:id", authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query(
+      "DELETE FROM api_keys WHERE id = $1 AND owner_id = $2 RETURNING id",
+      [req.params.id, req.user.id]
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: "Key not found" });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete key error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════
 //  SESSION TOKENS — Third-party API
 // ═══════════════════════════════════════════════════════════
 
-/**
- * POST /api/sessions/token
- * Header: X-Api-Key: <your_api_key>
- * Body: {
- *   participantName: string,     // display name for the user
- *   roomId?: string,             // optional: join an existing room
- *   roomName?: string,           // optional: create a new room on-the-fly
- *   permissions?: {              // optional, defaults to all true
- *     video: bool,
- *     audio: bool,
- *     screen: bool,
- *   },
- *   expiresIn?: string           // optional, default "1h"
- * }
- * Returns: {
- *   sessionToken: string,        // JWT to use with Socket.IO auth
- *   roomId: string,
- *   roomName: string,
- *   joinUrl: string,             // direct URL to open in browser
- *   expiresAt: string
- * }
- *
- * Usage example:
- *   curl -X POST https://your-server:5001/api/sessions/token \
- *     -H "X-Api-Key: vl_abc123..." \
- *     -H "Content-Type: application/json" \
- *     -d '{ "participantName": "Alice", "roomName": "Team Standup" }'
- */
-app.post("/api/sessions/token", apiKeyMiddleware, (req, res) => {
+app.post("/api/sessions/token", apiKeyMiddleware, async (req, res) => {
   const { participantName, roomId, roomName, permissions = {}, expiresIn } = req.body;
-
   if (!participantName)
     return res.status(400).json({ error: "participantName is required" });
 
-  // Resolve or create the room
-  let targetRoomId = roomId;
-  let targetRoomName;
+  try {
+    let targetRoomId = roomId;
+    let targetRoomName;
 
-  if (targetRoomId) {
-    if (!rooms[targetRoomId])
-      return res.status(404).json({ error: "Room not found" });
-    targetRoomName = rooms[targetRoomId].name;
-  } else {
-    // Auto-create room
-    targetRoomId = uuidv4();
-    targetRoomName = roomName || `Room-${targetRoomId.slice(0, 6)}`;
-    rooms[targetRoomId] = {
-      id: targetRoomId, name: targetRoomName,
-      createdBy: req.apiKeyEntry.ownerUsername,
-      ownerId: req.apiKeyEntry.ownerId,
-      participants: new Set(),
+    if (targetRoomId) {
+      const result = await db.query("SELECT * FROM rooms WHERE id = $1", [targetRoomId]);
+      if (!result.rows[0]) return res.status(404).json({ error: "Room not found" });
+      targetRoomName = result.rows[0].name;
+    } else {
+      targetRoomId = uuidv4();
+      targetRoomName = roomName || `Room-${targetRoomId.slice(0, 6)}`;
+      await db.query(
+        "INSERT INTO rooms (id, name, created_by, owner_id) VALUES ($1, $2, $3, $4)",
+        [targetRoomId, targetRoomName, req.apiKeyEntry.owner_username, req.apiKeyEntry.owner_id]
+      );
+    }
+
+    const expiry = expiresIn || SESSION_EXPIRES;
+    const payload = {
+      id: uuidv4(),
+      username: participantName,
+      roomId: targetRoomId,
+      isSessionToken: true,
+      permissions: {
+        video:  permissions.video  !== false,
+        audio:  permissions.audio  !== false,
+        screen: permissions.screen !== false,
+      },
+      apiKeyId: req.apiKeyEntry.id,
     };
+
+    const sessionToken = jwt.sign(payload, SESSION_SECRET, { expiresIn: expiry });
+    const decoded  = jwt.decode(sessionToken);
+    const expiresAt = new Date(decoded.exp * 1000).toISOString();
+
+    const proto = useTLS ? "https" : "http";
+    const host  = req.get("host") || `localhost:5001`;
+    const clientHost = host.replace(":5001", "");
+
+    res.status(201).json({
+      sessionToken,
+      roomId: targetRoomId,
+      roomName: targetRoomName,
+      permissions: payload.permissions,
+      expiresAt,
+      joinUrl: `${proto}://${clientHost}?sessionToken=${sessionToken}`,
+      socketUrl: `${proto}://${host}`,
+      usage: {
+        description: "Pass sessionToken to Socket.IO auth to join the room",
+        example: `io("${proto}://${host}", { auth: { token: "<sessionToken>" } })`,
+      },
+    });
+  } catch (err) {
+    console.error("Session token error:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
-
-  const expiry = expiresIn || SESSION_EXPIRES;
-  const payload = {
-    id: uuidv4(),                            // unique session id
-    username: participantName,
-    roomId: targetRoomId,
-    isSessionToken: true,                    // marks it as a third-party session token
-    permissions: {
-      video:  permissions.video  !== false,  // default true
-      audio:  permissions.audio  !== false,
-      screen: permissions.screen !== false,
-    },
-    apiKeyId: req.apiKeyEntry.id,
-  };
-
-  const sessionToken = jwt.sign(payload, SESSION_SECRET, { expiresIn: expiry });
-
-  // Compute expiry timestamp
-  const decoded = jwt.decode(sessionToken);
-  const expiresAt = new Date(decoded.exp * 1000).toISOString();
-
-  const proto = useTLS ? "https" : "http";
-  const host  = req.get("host") || `localhost:5001`;
-  const clientHost = host.replace(":5001", ":3000"); // point to React app
-
-  res.status(201).json({
-    sessionToken,
-    roomId: targetRoomId,
-    roomName: targetRoomName,
-    permissions: payload.permissions,
-    expiresAt,
-    joinUrl: `${proto}://${clientHost}?sessionToken=${sessionToken}`,
-    socketUrl: `${proto}://${host}`,
-    usage: {
-      description: "Pass sessionToken to Socket.IO auth to join the room",
-      example: `io("${proto}://${host}", { auth: { token: "<sessionToken>" } })`,
-    },
-  });
 });
 
-/**
- * GET /api/sessions/verify
- * Header: X-Session-Token: <session_token>
- * Returns: { valid: true, session: { username, roomId, permissions, expiresAt } }
- */
 app.get("/api/sessions/verify", (req, res) => {
   const token = req.headers["x-session-token"];
   if (!token) return res.status(400).json({ error: "Missing X-Session-Token header" });
@@ -342,7 +393,6 @@ app.get("/api/sessions/verify", (req, res) => {
 
 // ═══════════════════════════════════════════════════════════
 //  SOCKET.IO — AUTH MIDDLEWARE
-//  Accepts both regular JWT (users) and session tokens (third-party)
 // ═══════════════════════════════════════════════════════════
 
 const io = new Server(server, {
@@ -353,16 +403,20 @@ io.use((socket, next) => {
   const token = socket.handshake.auth?.token;
   if (!token) return next(new Error("Authentication required"));
 
-  // Try regular JWT first
   try {
     socket.user = jwt.verify(token, JWT_SECRET);
     return next();
   } catch { /* try session token */ }
 
-  // Try session token (third-party)
   try {
     const session = jwt.verify(token, SESSION_SECRET);
-    socket.user = { id: session.id, username: session.username, isSessionToken: true, roomId: session.roomId, permissions: session.permissions };
+    socket.user = {
+      id: session.id,
+      username: session.username,
+      isSessionToken: true,
+      roomId: session.roomId,
+      permissions: session.permissions,
+    };
     return next();
   } catch {
     return next(new Error("Invalid or expired token"));
@@ -375,6 +429,18 @@ io.use((socket, next) => {
 
 io.on("connection", (socket) => {
   const { id: userId, username } = socket.user;
+
+  // ── One socket per user: disconnect any stale sockets for this user ──
+  // This handles browser reconnects, multiple tabs, hot-reloads, etc.
+  Object.entries(sockets).forEach(([existingId, u]) => {
+    if (u.username === username) {
+      console.log(`⚡ Replacing stale socket for ${username}: ${existingId}`);
+      const staleSocket = io.sockets.sockets.get(existingId);
+      if (staleSocket) staleSocket.disconnect(true);
+      delete sockets[existingId];
+    }
+  });
+
   sockets[socket.id] = { userId, username };
   console.log(`🔌 ${username} connected (${socket.id})`);
 
@@ -390,13 +456,9 @@ io.on("connection", (socket) => {
 
   // ─── User list ────────────────────────────────────────────
   socket.on("get-users", () => {
-    const userList = Object.entries(sockets)
-      .filter(([sid]) => sid !== socket.id)
-      .map(([socketId, u]) => ({ socketId, name: u.username }));
-    socket.emit("users", userList);
-    socket.broadcast.emit("users",
-      Object.entries(sockets).map(([socketId, u]) => ({ socketId, name: u.username }))
-    );
+    // Send deduplicated list — each username appears exactly once
+    socket.emit("users", getUniqueUsers(socket.id));
+    socket.broadcast.emit("users", getUniqueUsers());
   });
 
   // ─── Text Chat ────────────────────────────────────────────
@@ -408,37 +470,49 @@ io.on("connection", (socket) => {
   });
 
   // ─── 1-on-1 WebRTC Signaling ──────────────────────────────
-  socket.on("call-user",    ({ to, signal })       => io.to(to).emit("incoming-call",  { from: socket.id, signal, fromName: username }));
-  socket.on("answer-call",  ({ to, signal })       => io.to(to).emit("call-accepted", signal));
-  socket.on("reject-call",  ({ to })               => io.to(to).emit("call-rejected"));
-  socket.on("end-call",     ({ to })               => io.to(to).emit("call-ended"));
+  socket.on("call-user", ({ to, signal, videoCall }) => {
+    io.to(to).emit("incoming-call", {
+      from: socket.id, signal, fromName: username,
+      videoCall: videoCall !== false, // pass through so callee knows call type
+    });
+  });
+  socket.on("answer-call", ({ to, signal }) => io.to(to).emit("call-accepted", signal));
+  socket.on("reject-call", ({ to })         => io.to(to).emit("call-rejected"));
+  socket.on("end-call",    ({ to })         => io.to(to).emit("call-ended"));
 
   // ─── Group Call: Join Room ────────────────────────────────
-  socket.on("join-room", (roomId) => {
-    if (!rooms[roomId]) { socket.emit("room-error", "Room not found"); return; }
+  socket.on("join-room", async (roomId) => {
+    try {
+      const result = await db.query("SELECT * FROM rooms WHERE id = $1", [roomId]);
+      if (!result.rows[0]) { socket.emit("room-error", "Room not found"); return; }
+      const room = result.rows[0];
 
-    socket.join(roomId);
-    rooms[roomId].participants.add(socket.id);
+      if (!roomParticipants[roomId]) roomParticipants[roomId] = new Set();
+      socket.join(roomId);
+      roomParticipants[roomId].add(socket.id);
 
-    const existingParticipants = [...rooms[roomId].participants]
-      .filter(sid => sid !== socket.id)
-      .map(sid => ({ socketId: sid, username: sockets[sid]?.username }));
+      const existingParticipants = [...roomParticipants[roomId]]
+        .filter(sid => sid !== socket.id)
+        .map(sid => ({ socketId: sid, username: sockets[sid]?.username }));
 
-    socket.emit("room-joined", { roomId, roomName: rooms[roomId].name, participants: existingParticipants });
-    socket.to(roomId).emit("user-joined-room", { socketId: socket.id, username });
+      socket.emit("room-joined", { roomId, roomName: room.name, participants: existingParticipants });
+      socket.to(roomId).emit("user-joined-room", { socketId: socket.id, username });
 
-    // Notify ALL online users (not in the room) that a group call is active
-    if (existingParticipants.length === 0) {
-      // First person in room — broadcast "call started" to everyone else online
-      socket.broadcast.emit("group-call-started", {
-        roomId,
-        roomName: rooms[roomId].name,
-        callerName: username,
-        callerSocketId: socket.id,
-      });
+      // Notify ALL online users when first person starts a group call
+      if (existingParticipants.length === 0) {
+        socket.broadcast.emit("group-call-started", {
+          roomId,
+          roomName: room.name,
+          callerName: username,
+          callerSocketId: socket.id,
+        });
+      }
+
+      console.log(`👥 ${username} joined room: ${room.name}`);
+    } catch (err) {
+      console.error("join-room error:", err);
+      socket.emit("room-error", "Server error joining room");
     }
-
-    console.log(`👥 ${username} joined room: ${rooms[roomId].name}`);
   });
 
   // ─── Group Call: Mesh Signaling ───────────────────────────
@@ -446,27 +520,34 @@ io.on("connection", (socket) => {
     io.to(to).emit("room-signal", { from: socket.id, fromName: username, signal, roomId });
   });
 
+  // ─── Group Call: Screen Share Status ─────────────────────
+  // Relay to all other participants in the room so they can update layout
+  socket.on("room-screenshare-status", ({ roomId, sharing }) => {
+    socket.to(roomId).emit("room-screenshare-status", { socketId: socket.id, sharing });
+  });
+
   // ─── Group Call: Leave Room ───────────────────────────────
   socket.on("leave-room", (roomId) => {
     socket.leave(roomId);
-    if (rooms[roomId]) {
-      rooms[roomId].participants.delete(socket.id);
+    if (roomParticipants[roomId]) {
+      roomParticipants[roomId].delete(socket.id);
       socket.to(roomId).emit("user-left-room", { socketId: socket.id, username });
-      console.log(`👋 ${username} left room: ${rooms[roomId].name}`);
+      console.log(`👋 ${username} left room ${roomId}`);
     }
   });
 
   // ─── Disconnect ───────────────────────────────────────────
   socket.on("disconnect", () => {
     console.log(`❌ ${username} disconnected`);
-    Object.entries(rooms).forEach(([roomId, room]) => {
-      if (room.participants.has(socket.id)) {
-        room.participants.delete(socket.id);
+    Object.entries(roomParticipants).forEach(([roomId, participants]) => {
+      if (participants.has(socket.id)) {
+        participants.delete(socket.id);
         socket.to(roomId).emit("user-left-room", { socketId: socket.id, username });
       }
     });
     delete sockets[socket.id];
-    io.emit("users", Object.entries(sockets).map(([socketId, u]) => ({ socketId, name: u.username })));
+    // Broadcast deduplicated list after disconnect
+    io.emit("users", getUniqueUsers());
     socket.broadcast.emit("user-disconnected", socket.id);
   });
 });
@@ -475,19 +556,6 @@ io.on("connection", (socket) => {
 const PORT = process.env.PORT || 5001;
 server.listen(PORT, "0.0.0.0", () => {
   const proto = useTLS ? "https" : "http";
-  console.log(`\n🚀 VoiceLink Server — ${proto}://0.0.0.0:${PORT}\n`);
-  console.log("📡 REST API");
-  console.log("  POST   /api/auth/register          → register user");
-  console.log("  POST   /api/auth/login             → login → JWT");
-  console.log("  GET    /api/auth/verify            → verify JWT [auth]");
-  console.log("  GET    /api/rooms                  → list rooms [auth]");
-  console.log("  POST   /api/rooms                  → create room [auth]");
-  console.log("  GET    /api/rooms/:id              → get room [auth]");
-  console.log("  POST   /api/keys                   → generate API key [auth]");
-  console.log("  GET    /api/keys                   → list API keys [auth]");
-  console.log("  DELETE /api/keys/:id               → revoke API key [auth]");
-  console.log("\n🔑 Third-Party API (use X-Api-Key header)");
-  console.log("  POST   /api/sessions/token         → create session token");
-  console.log("  GET    /api/sessions/verify        → verify session token");
-  console.log("\n🔌 WebSocket: connect with { auth: { token } }");
+  console.log(`\n🚀 VoiceLink Server — ${proto}://0.0.0.0:${PORT}`);
+  console.log(`📦 Database: ${process.env.DB_NAME || "voicelink"}@${process.env.DB_HOST || "localhost"}\n`);
 });

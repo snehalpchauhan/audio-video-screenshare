@@ -1,6 +1,6 @@
 import React from "react";
 import { useSocket } from "../context/SocketContext";
-import { FiGlobe, FiPhone, FiVideo, FiUsers, FiKey } from "react-icons/fi";
+import { FiGlobe, FiPhone, FiVideo, FiUsers, FiCpu } from "react-icons/fi";
 
 const Sidebar = ({ selectedUser, setSelectedUser, activeView, setActiveView }) => {
   const { users, me, username, callUser } = useSocket();
@@ -36,10 +36,10 @@ const Sidebar = ({ selectedUser, setSelectedUser, activeView, setActiveView }) =
       </button>
 
       <button
-        className={`sidebar-item ${activeView === "apikeys" ? "active" : ""}`}
-        onClick={() => { setActiveView("apikeys"); setSelectedUser(null); }}
+        className={`sidebar-item ${activeView === "developer" ? "active" : ""}`}
+        onClick={() => { setActiveView("developer"); setSelectedUser(null); }}
       >
-        <FiKey size={15} /> API Keys
+        <FiCpu size={15} /> Developer Portal
       </button>
 
       {/* Online users */}

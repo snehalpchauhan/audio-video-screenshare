@@ -1,12 +1,21 @@
 import React, { useEffect, useState } from "react";
 import { useSocket } from "../context/SocketContext";
 import { FiUsers, FiVideo, FiX } from "react-icons/fi";
+import { startRingtone, stopRingtone } from "../utils/ringtone";
 
 const TIMEOUT_SECS = 30;
 
 const GroupCallNotification = () => {
   const { incomingGroupCall, joinRoom, dismissGroupCall, currentRoom } = useSocket();
   const [countdown, setCountdown] = useState(TIMEOUT_SECS);
+
+  // ── Ring tone when group call starts ──────────────────────
+  useEffect(() => {
+    if (incomingGroupCall && !currentRoom) {
+      startRingtone();
+      return () => stopRingtone();
+    }
+  }, [incomingGroupCall, currentRoom]);
 
   // Reset countdown when a new notification arrives
   useEffect(() => {

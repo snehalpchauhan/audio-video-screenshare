@@ -1282,6 +1282,226 @@ input {
 
 .join-link:hover { text-decoration: underline; }
 
+.join-card-register {
+  max-width: 460px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   DEVELOPER PORTAL
+   ═══════════════════════════════════════════════════════════ */
+
+.dev-portal-hero {
+  margin-bottom: 8px;
+}
+
+.dev-portal-title {
+  align-items: flex-start;
+}
+
+.dev-portal-title h2 {
+  margin-bottom: 4px;
+}
+
+.dev-portal-tagline {
+  font-size: 0.88rem;
+  color: var(--text-2);
+  font-weight: 400;
+  line-height: 1.45;
+  max-width: 52rem;
+}
+
+.dev-portal-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dev-portal-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  transition: var(--transition);
+}
+
+.dev-portal-tabs button:hover {
+  color: var(--text-1);
+  border-color: var(--text-3);
+}
+
+.dev-portal-tabs button.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.dev-portal-panel {
+  animation: fadeInUp 0.25s ease;
+}
+
+.dev-account-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 20px 22px;
+  margin-bottom: 20px;
+}
+
+.dev-account-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-1);
+  margin-bottom: 8px;
+}
+
+.dev-account-meta {
+  font-size: 0.86rem;
+  color: var(--text-2);
+  margin-bottom: 4px;
+}
+
+.dev-account-meta strong {
+  color: var(--text-3);
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.dev-account-hint {
+  font-size: 0.82rem;
+  color: var(--text-3);
+  margin-top: 8px;
+  line-height: 1.4;
+}
+
+.dev-overview-steps {
+  margin-bottom: 20px;
+}
+
+.dev-capabilities {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.dev-cap-item {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+}
+
+.dev-cap-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.dev-cap-item strong {
+  display: block;
+  font-size: 0.88rem;
+  color: var(--text-1);
+  margin-bottom: 4px;
+}
+
+.dev-cap-item p {
+  font-size: 0.8rem;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+.dev-portal-cta {
+  max-width: 280px;
+}
+
+.dev-panel-lead {
+  font-size: 0.86rem;
+  color: var(--text-2);
+  margin-bottom: 14px;
+  line-height: 1.45;
+}
+
+.dev-ref-p {
+  font-size: 0.85rem;
+  color: var(--text-2);
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+.dev-ref-p code {
+  background: var(--bg-dark);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.82rem;
+  color: var(--green);
+}
+
+.dev-ref-list {
+  margin: 0 0 14px 18px;
+  color: var(--text-2);
+  font-size: 0.84rem;
+  line-height: 1.75;
+}
+
+.dev-ref-list code {
+  background: var(--bg-dark);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  color: var(--green);
+}
+
+.key-card-with-actions {
+  flex-wrap: wrap;
+}
+
+.key-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.key-card-main .key-date {
+  white-space: normal;
+}
+
+.btn-revoke-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--red);
+  background: rgba(255, 77, 109, 0.08);
+  border: 1px solid rgba(255, 77, 109, 0.25);
+  transition: var(--transition);
+}
+
+.btn-revoke-key:hover:not(:disabled) {
+  background: rgba(255, 77, 109, 0.18);
+}
+
+.btn-revoke-key:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
 /* ═══════════════════════════════════════════════════════════
    GROUP CALL — full screen container
    ═══════════════════════════════════════════════════════════ */
@@ -1588,4 +1808,74 @@ input {
   background: var(--accent);
   transition: width 1s linear;
   border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SCREEN SHARE — SPOTLIGHT LAYOUT
+   ═══════════════════════════════════════════════════════════ */
+
+/* Header badge shown when screen sharing is active */
+.screen-share-active-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(108, 99, 255, 0.18);
+  border: 1px solid rgba(108, 99, 255, 0.4);
+  color: var(--accent);
+  border-radius: 20px;
+  padding: 3px 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+/* Spotlight layout: large main tile + strip of smaller tiles below */
+.video-layout-spotlight {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 8px;
+  overflow: hidden;
+}
+
+/* The large spotlight tile (screen sharer) */
+.spotlight-tile {
+  flex: 1;
+  min-height: 0;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.4);
+}
+
+/* Strip of smaller participant tiles at the bottom */
+.video-strip {
+  display: flex;
+  gap: 8px;
+  height: 120px;
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.video-strip .peer-tile,
+.video-strip .local-tile {
+  flex: 0 0 160px;
+  height: 120px;
+  border-radius: var(--radius-sm);
+}
+
+.video-strip .peer-no-video {
+  min-height: unset;
+}
+
+.video-strip .peer-avatar {
+  width: 40px;
+  height: 40px;
+  font-size: 1rem;
+}
+
+.video-strip .peer-name-label {
+  font-size: 0.65rem;
+  padding: 2px 7px;
+  bottom: 5px;
+  left: 5px;
 }

@@ -1,15 +1,10 @@
 import React, { useEffect } from "react";
 import { useSocket } from "../context/SocketContext";
 import {
-  FiPhoneOff,
-  FiMic,
-  FiMicOff,
-  FiVideo,
-  FiVideoOff,
-  FiPhone,
-  FiX,
-  FiMonitor,
+  FiPhoneOff, FiMic, FiMicOff, FiVideo, FiVideoOff,
+  FiPhone, FiX, FiMonitor,
 } from "react-icons/fi";
+import { startRingtone, stopRingtone } from "../utils/ringtone";
 
 const VideoCall = () => {
   const {
@@ -28,39 +23,45 @@ const VideoCall = () => {
     stopScreenShare,
   } = useSocket();
 
-  const [muted, setMuted] = React.useState(false);
+  const [muted, setMuted]       = React.useState(false);
   const [videoOff, setVideoOff] = React.useState(false);
 
-  // Attach local stream to video element
+  // ── Ring tone on incoming 1-on-1 call ─────────────────────
   useEffect(() => {
-    if (myVideo.current && stream) {
-      myVideo.current.srcObject = stream;
+    if (callState.isReceivingCall) {
+      startRingtone();
+    } else {
+      stopRingtone();
     }
+    return () => stopRingtone();
+  }, [callState.isReceivingCall]);
+
+  // Attach streams to video elements
+  useEffect(() => {
+    if (myVideo.current && stream) myVideo.current.srcObject = stream;
   }, [stream, myVideo]);
 
-  // Attach remote stream to video element
   useEffect(() => {
-    if (remoteVideo.current && remoteStream) {
-      remoteVideo.current.srcObject = remoteStream;
-    }
+    if (remoteVideo.current && remoteStream) remoteVideo.current.srcObject = remoteStream;
   }, [remoteStream, remoteVideo]);
 
   const toggleMute = () => {
     if (stream) {
-      stream.getAudioTracks().forEach((t) => (t.enabled = !t.enabled));
-      setMuted((prev) => !prev);
+      stream.getAudioTracks().forEach(t => (t.enabled = !t.enabled));
+      setMuted(p => !p);
     }
   };
 
   const toggleVideo = () => {
     if (stream) {
-      stream.getVideoTracks().forEach((t) => (t.enabled = !t.enabled));
-      setVideoOff((prev) => !prev);
+      stream.getVideoTracks().forEach(t => (t.enabled = !t.enabled));
+      setVideoOff(p => !p);
     }
   };
 
-  const isInCall = callAccepted && !callState.isReceivingCall;
+  const isInCall    = callAccepted && !callState.isReceivingCall;
   const showIncoming = callState.isReceivingCall;
+  const isVideoCall  = callState.videoCall !== false; // true if video call
 
   return (
     <>
@@ -72,29 +73,20 @@ const VideoCall = () => {
               {callState.fromName?.charAt(0).toUpperCase()}
             </div>
             <h3>{callState.fromName}</h3>
-            <p>Incoming video call...</p>
+            <p>Incoming {isVideoCall ? "video" : "audio"} call...</p>
             <div className="call-actions">
-              <button
-                className="btn-answer"
-                onClick={() => answerCall(true)}
-                title="Answer with video"
-              >
-                <FiVideo />
-                <span>Video</span>
-              </button>
-              <button
-                className="btn-answer-audio"
-                onClick={() => answerCall(false)}
-                title="Answer audio only"
-              >
+              {/* Show Video answer button only if caller used video */}
+              {isVideoCall && (
+                <button className="btn-answer" onClick={() => answerCall(true)} title="Answer with video">
+                  <FiVideo />
+                  <span>Video</span>
+                </button>
+              )}
+              <button className="btn-answer-audio" onClick={() => answerCall(false)} title="Answer audio only">
                 <FiPhone />
                 <span>Audio</span>
               </button>
-              <button
-                className="btn-reject"
-                onClick={rejectCall}
-                title="Reject"
-              >
+              <button className="btn-reject" onClick={rejectCall} title="Reject">
                 <FiX />
                 <span>Reject</span>
               </button>
@@ -109,15 +101,10 @@ const VideoCall = () => {
           {/* Remote video (large) */}
           <div className="remote-video-wrap">
             {remoteStream ? (
-              <video
-                ref={remoteVideo}
-                autoPlay
-                playsInline
-                className="remote-video"
-              />
+              <video ref={remoteVideo} autoPlay playsInline className="remote-video" />
             ) : (
               <div className="waiting-remote">
-                <div className="pulse-ring"></div>
+                <div className="pulse-ring" />
                 <div className="caller-avatar large">
                   {activeCall?.peerName?.charAt(0).toUpperCase()}
                 </div>
@@ -126,19 +113,11 @@ const VideoCall = () => {
             )}
           </div>
 
-          {/* Local video (PiP) */}
+          {/* Local video PiP */}
           <div className="local-video-wrap">
-            <video
-              ref={myVideo}
-              autoPlay
-              playsInline
-              muted
-              className="local-video"
-            />
+            <video ref={myVideo} autoPlay playsInline muted className="local-video" />
             {videoOff && !isSharingScreen && (
-              <div className="video-off-overlay">
-                <FiVideoOff size={24} />
-              </div>
+              <div className="video-off-overlay"><FiVideoOff size={24} /></div>
             )}
             {isSharingScreen && (
               <div className="screen-share-badge">
@@ -153,7 +132,7 @@ const VideoCall = () => {
             {callAccepted && <span className="call-live-badge">● LIVE</span>}
           </div>
 
-          {/* Controls */}
+          {/* Controls — order: Mute | Camera | End Call | Screen Share */}
           <div className="call-controls">
             <button
               className={`ctrl-btn ${muted ? "active" : ""}`}
@@ -164,19 +143,15 @@ const VideoCall = () => {
             </button>
 
             <button
-              className="ctrl-btn end-call"
-              onClick={endCall}
-              title="End call"
-            >
-              <FiPhoneOff size={22} />
-            </button>
-
-            <button
               className={`ctrl-btn ${videoOff ? "active" : ""}`}
               onClick={toggleVideo}
               title={videoOff ? "Turn on camera" : "Turn off camera"}
             >
               {videoOff ? <FiVideoOff size={20} /> : <FiVideo size={20} />}
+            </button>
+
+            <button className="ctrl-btn end-call" onClick={endCall} title="End call">
+              <FiPhoneOff size={22} />
             </button>
 
             <button
