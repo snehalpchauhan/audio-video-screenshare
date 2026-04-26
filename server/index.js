@@ -323,12 +323,58 @@ app.post("/api/sessions/token", apiKeyMiddleware, async (req, res) => {
       if (!result.rows[0]) return res.status(404).json({ error: "Room not found" });
       targetRoomName = result.rows[0].name;
     } else {
-      targetRoomId = uuidv4();
-      targetRoomName = roomName || `Room-${targetRoomId.slice(0, 6)}`;
-      await db.query(
-        "INSERT INTO rooms (id, name, created_by, owner_id) VALUES ($1, $2, $3, $4)",
-        [targetRoomId, targetRoomName, req.apiKeyEntry.owner_username, req.apiKeyEntry.owner_id]
-      );
+      const ownerId = req.apiKeyEntry.owner_id;
+      const ownerUsername = req.apiKeyEntry.owner_username;
+
+      // Stable room for integrations (e.g. PMS passes roomName "pms-p1-c42"):
+      // every participant must get the SAME room UUID in their session JWT.
+      // Previously each /api/sessions/token call inserted a NEW room row, so
+      // users joined different Socket.IO rooms and saw only themselves.
+      //
+      // Multi-tenant: rows are scoped by api_keys.owner_id, so two different
+      // API keys can reuse the same display name without colliding. Integrators
+      // must send a roomName that is unique per *logical* call space (PMS uses
+      // project id + channel id so two projects / two channels never share a row).
+      if (roomName && typeof roomName === "string" && roomName.trim()) {
+        const rn = roomName.trim().slice(0, 100);
+        const existing = await db.query(
+          "SELECT id, name FROM rooms WHERE name = $1 AND owner_id = $2",
+          [rn, ownerId],
+        );
+        if (existing.rows[0]) {
+          targetRoomId = existing.rows[0].id;
+          targetRoomName = existing.rows[0].name;
+        } else {
+          targetRoomId = uuidv4();
+          targetRoomName = rn;
+          try {
+            await db.query(
+              "INSERT INTO rooms (id, name, created_by, owner_id) VALUES ($1, $2, $3, $4)",
+              [targetRoomId, targetRoomName, ownerUsername, ownerId],
+            );
+          } catch (insertErr) {
+            // Concurrent first tokens: unique (owner_id, name) — reuse the winner's row
+            if (insertErr && insertErr.code === "23505") {
+              const again = await db.query(
+                "SELECT id, name FROM rooms WHERE name = $1 AND owner_id = $2",
+                [rn, ownerId],
+              );
+              if (!again.rows[0]) throw insertErr;
+              targetRoomId = again.rows[0].id;
+              targetRoomName = again.rows[0].name;
+            } else {
+              throw insertErr;
+            }
+          }
+        }
+      } else {
+        targetRoomId = uuidv4();
+        targetRoomName = `Room-${targetRoomId.slice(0, 6)}`;
+        await db.query(
+          "INSERT INTO rooms (id, name, created_by, owner_id) VALUES ($1, $2, $3, $4)",
+          [targetRoomId, targetRoomName, ownerUsername, ownerId],
+        );
+      }
     }
 
     const expiry = expiresIn || SESSION_EXPIRES;
@@ -430,11 +476,13 @@ io.use((socket, next) => {
 io.on("connection", (socket) => {
   const { id: userId, username } = socket.user;
 
-  // ── One socket per user: disconnect any stale sockets for this user ──
-  // This handles browser reconnects, multiple tabs, hot-reloads, etc.
+  // ── One socket per logical identity (JWT `id` or unique session-token id) ──
+  // Never dedupe by display name: PMS embeds pass real names; duplicates like
+  // "User" or the same full name would disconnect the other caller and break
+  // the room (each side sees only themselves).
   Object.entries(sockets).forEach(([existingId, u]) => {
-    if (u.username === username) {
-      console.log(`⚡ Replacing stale socket for ${username}: ${existingId}`);
+    if (String(u.userId) === String(userId)) {
+      console.log(`⚡ Replacing stale socket for userId ${userId} (${username}): ${existingId}`);
       const staleSocket = io.sockets.sockets.get(existingId);
       if (staleSocket) staleSocket.disconnect(true);
       delete sockets[existingId];

@@ -42,6 +42,12 @@ const initSchema = async () => {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS company_name VARCHAR(255);
   `);
 
+  // One VoiceLink room name per API-key owner (stable third-party roomName reuse)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS rooms_owner_id_name_unique
+    ON rooms (owner_id, name);
+  `);
+
   console.log("✅ Database schema ready");
 };
 
