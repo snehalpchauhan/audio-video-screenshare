@@ -8,7 +8,7 @@ import VideoCall from "./components/VideoCall";
 import GroupCall from "./components/GroupCall";
 import GroupCallNotification from "./components/GroupCallNotification";
 import DeveloperPortal from "./components/DeveloperPortal";
-import { FiVideo, FiLogIn, FiUserPlus, FiPlus, FiUsers } from "react-icons/fi";
+import { FiVideo, FiLogIn, FiUserPlus, FiPlus, FiUsers, FiCode } from "react-icons/fi";
 import {
   authAPI, roomsAPI,
   getToken, setToken, clearToken,
@@ -144,9 +144,14 @@ function AuthScreen({ onAuth }) {
         <h1 className="join-title">VoiceLink</h1>
         <p className="join-subtitle">
           {mode === "login"
-            ? "Sign in to start chatting and calling"
-            : "Create a client account — use the Developer Portal for API keys and integrations"}
+            ? "Sign in to your account"
+            : "Create an account to access the Developer Portal, generate API keys, and embed audio/video in your product"}
         </p>
+        {mode === "register" && (
+          <div className="auth-dev-badge">
+            <FiCode size={13} /> Developer account — API keys &amp; session tokens included
+          </div>
+        )}
 
         {error && <p className="error-msg">{error}</p>}
 
